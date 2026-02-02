@@ -7,9 +7,21 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-URL = "https://www.gov.br/capes/pt-br/assuntos/editais-e-resultados-capes"
+# LISTA DE SITES PARA MONITORAR
+SITES = [
+    {
+        "nome": "CAPES - CERN",
+        "url": "https://www.gov.br/capes/pt-br/assuntos/editais-e-resultados-capes",
+        "seletor": "a.external-link"
+    },
+    {
+        "nome": "CNPq - Chamadas",
+        "url": "http://memoria2.cnpq.br/web/guest/chamadas-publicas?p_p_id=resultadosportlet_WAR_resultadoscnpqportlet_INSTANCE_0ZaM&filtro=abertas/#void",
+        "seletor": ".content h4"
+    }
+]
+
 ARQUIVO_HISTORICO = "editais_vistos.json"
-SELETOR_CSS_EDITAL = "a.external-link"
 
 SEU_TELEFONE = os.getenv("TELEFONE")
 SUA_API_KEY = os.getenv("API_KEY")
@@ -42,36 +54,42 @@ def enviar_whatsapp(mensagem):
         pass
 
 def verificar_novos_editais():
-    try:
-        response = requests.get(URL, headers=headers)
-        response.raise_for_status()
-    except requests.exceptions.RequestException:
-        return
-
-    soup = BeautifulSoup(response.content, 'html.parser')
-    elementos_encontrados = soup.select(SELETOR_CSS_EDITAL)
-    
-    if not elementos_encontrados:
-        return
-
-    editais_atuais = set()
-    for item in elementos_encontrados:
-        titulo = item.get_text(strip=True)
-        if titulo:
-            editais_atuais.add(titulo)
-
     historico = carregar_historico()
-    novos_editais = editais_atuais - historico
+    novos_itens_total = set()
+    
+    for site in SITES:
+        try:
+            response = requests.get(site["url"], headers=headers)
+            response.raise_for_status()
+        except requests.exceptions.RequestException:
+            continue
 
-    if novos_editais:
-        qtd = len(novos_editais)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        elementos_encontrados = soup.select(site["seletor"])
         
-        mensagem_zap = f"*ATENCAO: {qtd} Novo(s) Edital(is) Encontrado(s)*\n\n"
-        mensagem_zap += f"Confira no site: {URL}"
-        
-        enviar_whatsapp(mensagem_zap)
-        
-        historico_atualizado = historico.union(novos_editais)
+        if not elementos_encontrados:
+            continue
+
+        editais_do_site = set()
+        for item in elementos_encontrados:
+            titulo = item.get_text(strip=True)
+            if titulo:
+                editais_do_site.add(titulo)
+
+        novos_deste_site = editais_do_site - historico
+
+        if novos_deste_site:
+            qtd = len(novos_deste_site)
+            
+            mensagem_zap = f"*ATENCAO: {qtd} Novo(s) em {site['nome']}*\n\n"
+            mensagem_zap += f"Confira no site: {site['url']}"
+            
+            enviar_whatsapp(mensagem_zap)
+            
+            novos_itens_total.update(novos_deste_site)
+
+    if novos_itens_total:
+        historico_atualizado = historico.union(novos_itens_total)
         salvar_historico(historico_atualizado)
 
 if __name__ == "__main__":
