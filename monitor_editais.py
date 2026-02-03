@@ -29,12 +29,18 @@ headers = {
 def carregar_historico():
     if os.path.exists(ARQUIVO_HISTORICO):
         with open(ARQUIVO_HISTORICO, 'r', encoding='utf-8') as f:
-            return set(json.load(f))
-    return set()
+            try:
+                dados = json.load(f)
+                if isinstance(dados, dict):
+                    return {k: set(v) for k, v in dados.items()}
+            except json.JSONDecodeError:
+                pass
+    return {}
 
-def salvar_historico(novos_dados):
+def salvar_historico(historico_sets):
+    historico_listas = {k: list(v) for k, v in historico_sets.items()}
     with open(ARQUIVO_HISTORICO, 'w', encoding='utf-8') as f:
-        json.dump(list(novos_dados), f, ensure_ascii=False, indent=4)
+        json.dump(historico_listas, f, ensure_ascii=False, indent=4)
 
 def enviar_whatsapp(mensagem):
     msg_codificada = urllib.parse.quote(mensagem)
@@ -78,7 +84,7 @@ def buscar_fapeam_selenium():
         wait = WebDriverWait(driver, 15)
         wait.until(EC.presence_of_element_located((By.ID, "editais-abertos_content")))
 
-        links = driver.find_elements(By.CSS_SELECTOR, "#editais-abertos_content h2 a")
+        links = driver.find_elements(By.CSS_SELECTOR, ".editais-abertos h2 a")
 
         for link in links:
             titulo = link.text.strip()
@@ -96,52 +102,55 @@ def buscar_fapeam_selenium():
 def verificar_novos_editais():
     print("Iniciando verificação...")
     historico = carregar_historico()
-    novos_itens_total = set()
+    houve_alteracao = False
 
-    novos_capes = buscar_capes_cnpq({
-        "nome": "CAPES",
-        "url": "https://www.gov.br/capes/pt-br/assuntos/editais-e-resultados-capes",
-        "seletor": "a.external-link, a.internal-link"
-    })
-    
-    diff_capes = novos_capes - historico
-    if diff_capes:
-        qtd = len(diff_capes)
-        print(f" -> {qtd} novos na CAPES.")
-        enviar_whatsapp(f"*ATENCAO: {qtd} Novo(s) na CAPES*\n\nConfira: https://www.gov.br/capes/pt-br/assuntos/editais-e-resultados-capes")
-        novos_itens_total.update(diff_capes)
-    else:
-        print(" -> Sem novidades na CAPES.")
+    sites_config = [
+        {
+            "nome": "CAPES",
+            "url": "https://www.gov.br/capes/pt-br/assuntos/editais-e-resultados-capes",
+            "seletor": "a.external-link, a.internal-link",
+            "metodo": "requests"
+        },
+        {
+            "nome": "CNPq",
+            "url": "http://memoria2.cnpq.br/web/guest/chamadas-publicas?p_p_id=resultadosportlet_WAR_resultadoscnpqportlet_INSTANCE_0ZaM&filtro=abertas/#void",
+            "seletor": ".content h4",
+            "metodo": "requests"
+        },
+        {
+            "nome": "FAPEAM",
+            "url": "https://www.fapeam.am.gov.br/editais/?aba=editais-abertos",
+            "metodo": "selenium"
+        }
+    ]
 
-    novos_cnpq = buscar_capes_cnpq({
-        "nome": "CNPq",
-        "url": "http://memoria2.cnpq.br/web/guest/chamadas-publicas?p_p_id=resultadosportlet_WAR_resultadoscnpqportlet_INSTANCE_0ZaM&filtro=abertas/#void",
-        "seletor": ".content h4"
-    })
+    for site in sites_config:
+        nome_site = site["nome"]
+        
+        if nome_site not in historico:
+            historico[nome_site] = set()
 
-    diff_cnpq = novos_cnpq - historico
-    if diff_cnpq:
-        qtd = len(diff_cnpq)
-        print(f" -> {qtd} novos no CNPq.")
-        enviar_whatsapp(f"*ATENCAO: {qtd} Novo(s) no CNPq*\n\nConfira: http://memoria2.cnpq.br/web/guest/chamadas-publicas")
-        novos_itens_total.update(diff_cnpq)
-    else:
-        print(" -> Sem novidades no CNPq.")
+        if site["metodo"] == "requests":
+            editais_atuais = buscar_capes_cnpq(site)
+        else:
+            editais_atuais = buscar_fapeam_selenium()
 
-    novos_fapeam = buscar_fapeam_selenium()
-    
-    diff_fapeam = novos_fapeam - historico
-    if diff_fapeam:
-        qtd = len(diff_fapeam)
-        print(f" -> {qtd} novos na FAPEAM.")
-        enviar_whatsapp(f"*ATENCAO: {qtd} Novo(s) na FAPEAM*\n\nConfira: https://www.fapeam.am.gov.br/editais/?aba=editais-abertos")
-        novos_itens_total.update(diff_fapeam)
-    else:
-        print(" -> Sem novidades na FAPEAM.")
+        novos_deste_site = editais_atuais - historico[nome_site]
 
-    if novos_itens_total:
-        historico_atualizado = historico.union(novos_itens_total)
-        salvar_historico(historico_atualizado)
+        if novos_deste_site:
+            qtd = len(novos_deste_site)
+            print(f" -> {qtd} novos em {nome_site}.")
+            
+            mensagem = f"*ATENCAO: {qtd} Novo(s) em {nome_site}*\n\nConfira: {site['url']}"
+            enviar_whatsapp(mensagem)
+            
+            historico[nome_site].update(novos_deste_site)
+            houve_alteracao = True
+        else:
+            print(f" -> Sem novidades em {nome_site}.")
+
+    if houve_alteracao:
+        salvar_historico(historico)
         print("\nHistórico atualizado.")
 
 if __name__ == "__main__":
